@@ -100,8 +100,8 @@ def d_loss(opt, decide_real, decide_fake):
         value = score_real + score_fake
         return -value
     if opt.loss == 'square':
-        score_real = torch.mean(torch.pow(decide_real, 2))
-        score_fake = torch.mean(torch.pow(torch.add(decide_fake, -1), 2))
+        score_real = torch.mean(torch.pow(torch.add(decide_real, -1), 2))
+        score_fake = torch.mean(torch.pow(decide_fake, 2))
         return 0.5 * score_real + 0.5 * score_fake
     if opt.loss == 'hinge':
         inv_real = torch.ones(opt.nbatch, 1) - decide_real
@@ -115,7 +115,7 @@ def g_loss(opt, decide_fake):
         value = torch.mean(torch.log(decide_fake))
         return -value
     if opt.loss == 'square':
-        loss = torch.mean(torch.pow(decide_fake, 2))
+        loss = torch.mean(torch.pow(torch.add(decide_fake, -1), 2))
         return loss
     if opt.loss == 'hinge':
         loss = -torch.mean(decide_fake)
