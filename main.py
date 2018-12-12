@@ -13,13 +13,16 @@ import matplotlib.pyplot as plt
 class Generator(nn.Module):
     def __init__(self, opt):
         super(Generator, self).__init__()
-        self.main = nn.Sequential(
-            nn.Linear(opt.nlatent, opt.nhidden),
-            nn.LeakyReLU(),
-            nn.Linear(opt.nhidden, opt.nhidden),
-            nn.LeakyReLU(),
-            nn.Linear(opt.nhidden, 1),
-        )
+        if opt.complex:
+            self.main = nn.Sequential(
+                nn.Linear(opt.nlatent, opt.nhidden),
+                nn.LeakyReLU(),
+                nn.Linear(opt.nhidden, opt.nhidden),
+                nn.LeakyReLU(),
+                nn.Linear(opt.nhidden, 1),
+            )
+        else:
+            self.main = nn.Linear(opt.nlatent, 1)
 
     def forward(self, z):
         return self.main(z)
@@ -28,19 +31,35 @@ class Discriminator(nn.Module):
     def __init__(self, opt):
         super(Discriminator, self).__init__()
         self.loss = opt.loss
-        self.main = nn.Sequential(
-            nn.Linear(1, opt.nhidden),
-            nn.LeakyReLU(),
-            nn.Linear(opt.nhidden, opt.nhidden),
-            nn.LeakyReLU(),
-            nn.Linear(opt.nhidden, 1),
-        )
+        self.complex = opt.complex
+        if opt.complex:
+            self.main = nn.Sequential(
+                nn.Linear(1, opt.nhidden),
+                nn.LeakyReLU(),
+                nn.Linear(opt.nhidden, opt.nhidden),
+                nn.LeakyReLU(),
+                nn.Linear(opt.nhidden, 1),
+            )
+        else:
+            self.lin1 = nn.Linear(opt.nlatent, opt.nhidden)
+            self.lin2 = nn.Linear(opt.nhidden, 1)
 
     def forward(self, x):
-        out = self.main(x)
+        if self.complex:
+            out = self.main(x)
+        else:
+            out = x
+            out = self.lin1(out)
+            out = torch.relu(out)
+            out = self.lin2(out)
+
         if self.loss == 'hinge':
-            return torch.tanh(out)
+            return out
         return torch.sigmoid(out)
+
+    def dump(self):
+        print 'lin1', self.lin1.weight, self.lin1.bias
+        print 'lin2', self.lin2.weight, self.lin2.bias
 
 def train(opt, D, G, underlying):
     optimizer_d = torch.optim.Adam(D.parameters(), lr=opt.lr)
@@ -48,17 +67,18 @@ def train(opt, D, G, underlying):
 
     for i in xrange(opt.niter):
         # Update D
-        D.zero_grad()
-        x_real = sample_underlying(opt, underlying)
-        decide_real = D(x_real)
+        for j in xrange(opt.dperg):
+            D.zero_grad()
+            x_real = sample_underlying(opt, underlying)
+            decide_real = D(x_real)
 
-        z = torch.randn(opt.nbatch, opt.nlatent)
-        x_fake = G(z)
-        decide_fake = D(x_fake.detach())
-        
-        d_error = d_loss(opt, decide_real, decide_fake)
-        d_error.backward()
-        optimizer_d.step()
+            z = torch.randn(opt.nbatch, opt.nlatent)
+            x_fake = G(z)
+            decide_fake = D(x_fake.detach())
+
+            d_error = d_loss(opt, decide_real, decide_fake)
+            d_error.backward()
+            optimizer_d.step()
 
         # Update G
         G.zero_grad()
@@ -70,15 +90,18 @@ def train(opt, D, G, underlying):
 
         if (i+1) % opt.printfreq == 0:
             kl, buckets = eval_g(opt, underlying, G)
-            print (i+1), d_error.item(), g_error.item(), kl
+            print (i+1), d_error.item(), g_error.item(), kl, G.main.weight.item(), G.main.bias.item()
+
+        if (i+1) % opt.vizfreq == 0:
+            demo_g(opt, underlying, G)
 
     demo_g(opt, underlying, G)
 
 def decide_underlying(opt):
-    weights = np.random.rand(opt.ntrue)
-    weights /= np.sum(weights)
-    means = np.random.rand(opt.ntrue) * 0.8 + 0.1
-    stdevs = np.random.rand(opt.ntrue) * opt.stdevcap
+    # simple
+    weights = np.ones(opt.ntrue) / opt.ntrue
+    means = np.linspace(0, 1, opt.ntrue+1, endpoint=False)[1:]
+    stdevs = np.ones(opt.ntrue) * opt.stdevcap
 
     print 'weights', weights
     print 'means', means
@@ -140,15 +163,15 @@ def eval_g(opt, underlying, G):
                 continue
             buckets[bucket] += 1
 
-    buckets = buckets / opt.ntests / opt.nbatch
+    buckets = buckets / np.sum(buckets)
     kl = 0
     for i, p_x in enumerate(buckets):
         x = float(i) / opt.nbuckets
         if p_x == 0:
             continue
         q_x = likelihood(x, x+1./opt.nbuckets, opt, underlying)
-        if q_x < 1e-5:
-            q_x = 1e-5
+        if q_x < 1e-8:
+            q_x = 1e-8
         div = p_x * np.log(p_x / q_x)
         kl += div
 
@@ -178,10 +201,13 @@ if __name__ == '__main__':
     parser.add_argument('--niter', type=int, default=2000)
     parser.add_argument('--ntrue', type=int, default=1)
     parser.add_argument('--stdevcap', type=float, default=0.01)
-    parser.add_argument('--nbuckets', type=int, default=100)
+    parser.add_argument('--nbuckets', type=int, default=200)
     parser.add_argument('--ntests', type=int, default=100)
     parser.add_argument('--printfreq', type=int, default=100)
+    parser.add_argument('--vizfreq', type=int, default=100)
     parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--dperg', type=int, default=1)
+    parser.add_argument('--complex', action='store_true')
     opt = parser.parse_args()
     print opt
 
